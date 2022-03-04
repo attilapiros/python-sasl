@@ -25,6 +25,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <iostream>
+#include <termios.h>
 
 using namespace std;
 
@@ -58,7 +59,7 @@ namespace saslwrapper {
          */
         bool setAttr(const string& key, const string& value);
         bool setAttr(const string& key, uint32_t value);
-        
+
         /**
          * Initialize the client object.  This should be called after all of the properties have been set.
          *
@@ -76,7 +77,7 @@ namespace saslwrapper {
          * @return true iff success.  If false is returned, call getError() for error details.
          */
         bool start(const string& mechList, string& chosen, string& initialResponse);
-        
+
         /**
          * Step the SASL handshake.
          *
@@ -101,7 +102,7 @@ namespace saslwrapper {
          * Decode data received from the server.
          *
          * @param cipherText Encrypted data received from the server
-         * @param clearText (output) Decrypted clear text data 
+         * @param clearText (output) Decrypted clear text data
          *
          * @return true iff success.  If false is returned, call getError() for error details.
          */
@@ -109,7 +110,7 @@ namespace saslwrapper {
 
         /**
          * Get the user identity (used for authentication) associated with this session.
-         * Note that this is particularly useful for single-sign-on mechanisms in which the 
+         * Note that this is particularly useful for single-sign-on mechanisms in which the
          * username is not supplied by the application.
          *
          * @param userId (output) Authenticated user ID for this session.
@@ -130,7 +131,7 @@ namespace saslwrapper {
          * an empty string.
          *
          * @param error Error message string
-         */        
+         */
         void getError(string& error);
 
     private:
@@ -138,6 +139,8 @@ namespace saslwrapper {
         // class is non-copyable.
         ClientImpl(const ClientImpl&);
         const ClientImpl& operator=(const ClientImpl&);
+
+        static int getPassword(char *pass, size_t maxLength);
 
         void addCallback(unsigned long id, void* proc);
         void lastCallback() { addCallback(SASL_CB_LIST_END, 0); }
@@ -434,13 +437,18 @@ void ClientImpl::setError(const string& context, int code, const string& text, c
 void ClientImpl::interact(sasl_interact_t* prompt)
 {
     string output;
-    char* input;
 
     if (prompt->id == SASL_CB_PASS) {
-        string ppt(prompt->prompt);
-        ppt += ": ";
-        char* pass = getpass(ppt.c_str());
-        output = string(pass);
+        cout << prompt->prompt << ": ";
+        size_t maxPassLength = 128;
+        char pass[maxPassLength];
+        if (getPassword((char *)pass, maxPassLength) > 0) {
+          output = string(pass);
+        } else {
+          cerr << "Error getting the password from stdin!" << endl;
+          output = "";
+        }
+        cout << endl;
     } else {
         cout << prompt->prompt;
         if (prompt->defresult)
@@ -480,4 +488,34 @@ int ClientImpl::cbPassword(sasl_conn_t *conn, void *context, int id, sasl_secret
 
     *psecret = impl->secret;
     return SASL_OK;
+}
+
+int ClientImpl::getPassword(char *pass, size_t maxLength)
+{
+    int numRead;
+    struct termios origTermios, noEchoTermios;
+    int stdinFileDesc = fileno(stdin);
+
+    /* Turn echoing off and fail if we can’t. */
+    if (tcgetattr(stdinFileDesc, &origTermios) != 0)
+    {
+        return -1;
+    }
+    noEchoTermios = origTermios;
+    noEchoTermios.c_lflag &= ~ECHO;
+    if (tcsetattr(stdinFileDesc, TCSAFLUSH, &noEchoTermios) != 0)
+    {
+        return -1;
+    }
+
+    numRead = getline(&pass, &maxLength, stdin);
+
+    if (numRead >= 1 && pass[numRead - 1] == '\n')
+    {
+        pass[numRead-1] = 0;
+        numRead--;
+    }
+
+    tcsetattr(stdinFileDesc, TCSAFLUSH, &origTermios);
+    return numRead;
 }
